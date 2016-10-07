@@ -39,9 +39,11 @@ parser.add_argument("--root", default=".", help="Root directory")
 args = parser.parse_args()
 
 root = args.root
-files = glob.iglob(os.path.join(root, "*","*.fits"))
+calibs = glob.glob(os.path.join(root, "*","*.fits.gz"))
+fields = glob.glob(os.path.join(root, "*","*","*.fits.gz"))
+files = calibs+fields
 
-registryName = "inputregistry.sqlite3"
+registryName = os.path.join(root,"registry.sqlite3")
 if os.path.exists(registryName) and args.create:
     os.unlink(registryName)
 
@@ -49,33 +51,72 @@ makeTables = not os.path.exists(registryName)
 conn = sqlite3.connect(registryName)
 if makeTables:
     cmd = "create table raw (id integer primary key autoincrement"
-    cmd += ", mjd float, ra text, dec text, filename text, objtype text)"
+    cmd += ", expNum int, filename text, pointing text, filter text, dateObs text, mjd double, ra text, dec text, expTime double)"
+    
+    #mjd,pointing,dateObs,id,filter,filename,ra,expNum,dec,expTime
+    
+    conn.execute(cmd)
+    conn.commit()
+    cmd = "create table raw_visit (id integer primary key autoincrement"
+    cmd += ", expNum int, filename text, pointing text, filter text, dateObs text, mjd double, ra text, dec text, expTime double)"
+    conn.execute(cmd)
+    conn.commit()
+    cmd = "create table raw_flat (id integer primary key autoincrement"
+    cmd += ", expNum int, filename text, pointing text, filter text, dateObs text, mjd double, expTime double)"
+    conn.execute(cmd)
+    cmd = "create table raw_dark (id integer primary key autoincrement"
+    cmd += ", expNum int, filename text, pointing text, filter text, dateObs text, mjd double, expTime double)"
     conn.execute(cmd)
     conn.commit()
 
 for fits in files:
-    matches = re.search(r'(FIELDS|FLAT|STANDARD)/(((\w{5})_(\w{3})_(\w{3})_(\d{2}))|(FLAT_(\w{5}))|(STD_(\d{4})_(\w{5})))_(\d{3}).fits', fits)
-    #File names examples: FIELDS: Fields/05feb_F02_S22_10_021.fits
+    matches = re.search(r'(FIELDS|FLAT|DARK|STANDARD)/(((\w{9})/(\w{3})_(\w{3})_(\d{2}))|(FLAT_(\w{5}))|(STD_(\d{4})_(\w{5}))|D_\d{1}|D_\d{2}|D_1.2)_(\d{3}).fits', fits)
+    #File names examples: FIELDS: FIELDS/05feb_F02_S22_10_021.fits
+    #FIELDS/%(dateObs)s_F02_%(pointing)s_%(expTime)d_%(expNum)03d.fits
     #Flats: FLAT/FLAT_06Feb_005.fits
     #Standards: STANDARD/STD_9104_05feb_053.fits
     if not matches:
         print >>sys.stderr, "Warning: skipping unrecognized filename:", fits
         continue
 
-    sys.stderr.write("Processing %s\n" % (fits))
-    
+    type = fits[len(root):len(root)+4]
+
+    if (type=='FIEL'):
+        dateObs = fits[len(root)+11:len(root)+11+5]
+        pointing = fits[len(root)+21:len(root)+21+3]
+    if (type=='FLAT'):
+        dateObs = fits[len(root)+10:len(root)+10+5]
+        print dateObs
+    if (type=='DARK'):
+        dateObs = 'Unknown'
+
+    expNum = fits[len(fits)-8-3:len(fits)-8]
+
+
     # Extract information from header
     im = afwImage.ExposureF(fits)
     h = im.getMetadata()
-    mjd = h.get('MJD-OBS')
-    ra = h.get('RA')
-    dec= h.get('DEC')
+    mjd = float(h.get('MJD-OBS'))
     filename = h.get('ARCFILE')
     objtype = h.get('OBJECT')
-    
+    filter = 'Ks'
+    pointing = ''
+    expTime = float(h.get('ESO DET DIT'))
+
     try:
-        conn.execute("INSERT INTO raw VALUES (NULL, ?, ?, ?, ?, ?)",
-                     (mjd, ra, dec, filename, objtype))
+        if type=='FIEL':
+            ra = h.get('RA')
+            dec= h.get('DEC')
+            conn.execute("INSERT INTO raw VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (expNum, filename, pointing, filter, dateObs, mjd, ra, dec, expTime))
+
+        #conn.execute("INSERT INTO raw_visit VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)",                          (expNum, dateObs, mjd, expTime, ra, dec, filename, objtype, filter))
+        if type=='FLAT':
+            conn.execute("INSERT INTO raw_flat VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)",
+                     (expNum, filename, pointing, filter, dateObs, mjd, expTime))
+        if type=='DARK':
+            conn.execute("INSERT INTO raw_dark VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)",
+                     (expNum, filename, pointing, filter, dateObs, mjd, expTime))
     
     except Exception as e:
         print ("skipping botched %s: %s" % (fits, e))
